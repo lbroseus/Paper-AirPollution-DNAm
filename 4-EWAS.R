@@ -33,9 +33,9 @@ rm(list = ls()); gc()
 # Paths and parameters
 #------------------------------------------------------------------------------#
 
-workDir <-  "~/AirPollution-DNAme/MetaAnalysis"
+workDir <-  "~/AirPollution-DNAme/"
 
-analysis <- "Test"
+analysis <- "Main"
 
 rm_samples <- c()
 
