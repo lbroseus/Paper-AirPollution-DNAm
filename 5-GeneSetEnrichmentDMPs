@@ -1,0 +1,177 @@
+#!/usr/bin/env Rscript
+cat("[AirP-DNAme] Running Rscript 5-GeneSetEnrichmentDMPs.R...\n")
+################################################################################
+# AirP-DNAme - Test DMPs for Gene Set Enrichment [Informative probes]
+################################################################################
+# Author: Lucile
+# Date of creation: 10/01/2023
+# Check: 06/03/2023
+#------------------------------------------------------------------------------#
+# Note: 
+# Run Rscript 4-DMRs.R before
+# Gene set enrichment test performed on probes satisfying:
+# Nominal p-value < thr (0.001)
+# Inter-individual variance > Error variance + Batch variance
+################################################################################
+# Paths and parameters
+#------------------------------------------------------------------------------#
+
+analysis <- "Main" # To be adapted ("Main", "Male", "Female")
+
+# Where DMP results are to be found
+resDir <- paste0("~/Work/AirPollution-DNAme/Results/EWAS/", analysis, "/DMP/")
+# Where GSEA results will be saved
+saveDir <- paste0("~/Work/AirPollution-DNAme/Results/EWAS/", analysis, "/GSEA/")
+
+# Parameters for GSEA
+arraytype <- "EPIC"
+thr <- 0.001 # P-value threshold
+
+################################################################################
+# R packages
+#------------------------------------------------------------------------------#
+
+library(magrittr)
+library(ggplot2)
+library(missMethyl)
+library(GenomicRanges)
+
+suppressPackageStartupMessages( library( IlluminaHumanMethylationEPICanno.ilm10b4.hg19 ) ) 
+annotation_object <- IlluminaHumanMethylationEPICanno.ilm10b4.hg19::IlluminaHumanMethylationEPICanno.ilm10b4.hg19
+FullAnnot <- minfi::getAnnotation(annotation_object)
+
+################################################################################
+# Probe variation
+#------------------------------------------------------------------------------#
+
+probeVar <- readRDS("~/Work/AirPollution-DNAme/Results/ProbeVariation/EPI+SEP+PEL_ProbeVariation_PRadj.rds")
+
+################################################################################
+# RUN
+#------------------------------------------------------------------------------#
+
+if( !dir.exists(saveDir) ) dir.create( saveDir )
+
+setwd( resDir )
+
+inFiles <- list.files(path = resDir, pattern = ".rds", recursive = T)
+inFiles
+
+exposures <- tapply(inFiles, 
+                      seq_along(inFiles),
+                      FUN = function(x) paste(stringr::str_split(x, 
+                                                                 pattern = "\\.", 
+                                                                 simplify = T)[c(1,3)], collapse = "-"))
+exposures
+
+# Run GSEA on gene subset (genes associated to DMRs)
+
+GSEA <- data.frame()
+for(f in seq_along( inFiles )){
+  
+  print( inFiles[f] )
+  res <- readRDS( inFiles[f] )
+
+  # Background
+  all.cpg <- res$CpG <-rownames(res)
+  
+  #For meta-analyses with results from Bacon
+  if("pval.org.meta" %in% colnames(res)) res <- res %>% dplyr::rename(raw_pvalue = pval.org.meta)
+  
+  # Remove uninformative probes
+  res <- merge(res, probeVar, by = "CpG")
+  res <- res %>% dplyr::filter(indiv>error+grouping)
+  
+  # Test the set of CpG with nominal p-value < thr
+  res <- res %>% dplyr::filter(raw_pvalue<thr)
+  
+  if( nrow(res>0) ){
+
+  # KEGG pathway enrichment
+  
+  # Enrichment 
+  df_tmp <- missMethyl::gometh(sig.cpg = res$CpG,
+                               all.cpg = all.cpg,   # Background is the set of CpG that passed QCs
+                               collection = "KEGG",
+                               prior.prob = TRUE,
+                               anno = FullAnnot,
+                               genomic.features = c("ALL"),
+                               array.type = arraytype, 
+                               sig.genes = T)
+  
+  if( nrow(df_tmp) > 0 ) GSEA <- rbind.data.frame(GSEA, data.frame(exposure = exposures[f], nprobes.tested = nrow(res), df_tmp))
+  }
+}
+
+GSEA %>% dplyr::filter(FDR<0.05)
+GSEA %>% dplyr::arrange(P.DE) %>% head(10)
+
+################################################################################
+# Save 
+#------------------------------------------------------------------------------#
+
+outFile <- paste0(saveDir, "/KEGG_probes_pvalthr+filt.all.rds")
+saveRDS(GSEA, file = outFile)
+
+################################################################################
+# Go term enrichment
+#------------------------------------------------------------------------------#
+
+GSEA <- data.frame()
+for(f in seq_along( inFiles )){
+  
+  print( inFiles[f] )
+  res <- readRDS( inFiles[f] )
+  
+  # Background
+  all.cpg <- res$CpG <- rownames(res)
+  
+  # For meta-analyses with results from Bacon
+  if("pval.org.meta" %in% colnames(res)) res <- res %>% dplyr::rename(raw_pvalue = pval.org.meta)
+  
+  # Remove uninformative probes
+  res <- merge(res, probeVar, by = "CpG")
+  res <- res %>% dplyr::filter(indiv>error+grouping)
+  
+  # Test the set of CpG with nominal p-value < thr
+  res <- res %>% dplyr::filter(raw_pvalue<thr)
+  
+  if( nrow(res>0) ){
+
+    # GO term enrichment
+    
+    # Enrichment 
+    df_tmp <- missMethyl::gometh(sig.cpg = res$CpG, 
+                                 all.cpg = all.cpg,
+                                 collection = "GO",
+                                 prior.prob = TRUE,
+                                 anno = FullAnnot,
+                                 genomic.features = c("ALL"),
+                                 array.type = arraytype, 
+                                 sig.genes = T) 
+    
+    if( class(df_tmp) != "try-error" ){
+      
+      df_tmp <- df_tmp %>% dplyr::group_by(ONTOLOGY) %>%
+        dplyr::mutate(FDR2 = p.adjust(p = P.DE, method = "BH")) %>%
+        data.frame()
+  
+    }
+    
+    if( nrow(df_tmp) > 0 ) GSEA <- rbind.data.frame(GSEA, data.frame(exposure = exposures[f], nprobes.tested = nrow(res), df_tmp))
+  }
+}
+
+GSEA %>% dplyr::filter(FDR2<0.05)
+GSEA %>% dplyr::arrange(P.DE) %>% head(10)
+
+################################################################################
+# Save 
+#------------------------------------------------------------------------------#
+
+outFile <- paste0(saveDir, "/GO_probes_pvalthr+filt.all.rds")
+saveRDS(GSEA, file = outFile)
+
+################################################################################
+rm(list = ls())
+################################################################################
